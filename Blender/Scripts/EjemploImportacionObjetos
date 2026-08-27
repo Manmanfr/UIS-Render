@@ -1,0 +1,60 @@
+# Liberia para dar acceso de blender a python
+import bpy
+# Libreria para acceder a los archivos del sistema
+import os
+# Libreria para operaciones matematicas
+import math
+
+# Ruta del archivo a importar
+file_path = r"C:\Users\57321\Documents\Proyectos\rendering\Blender\Modelos\Arbol.fbx"
+
+def instance_object(file_path, location = (0.0,0.0,0.0), 
+    scale = (1.0,1.0,1.0), rotation_euler = (0.0,0.0,0.0)):
+    # Verificar que el archivo existe
+    if not os.path.isfile(file_path):
+        raise FileNotFoundError(f"No se encontró el archivo: {file_path}")
+
+    # Deseleccionar todos los objetos
+    bpy.ops.object.select_all(action='DESELECT')
+
+    # Importar el modelo según su extensión
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext == ".obj":
+        bpy.ops.import_scene.obj(filepath=file_path)
+    elif ext == ".fbx":
+        bpy.ops.import_scene.fbx(filepath=file_path)
+    elif ext == ".stl":
+        bpy.ops.import_mesh.stl(filepath=file_path)
+    elif ext == ".blend":
+        # Para archivos .blend hacemos un "Append" de sus objetos
+        with bpy.data.libraries.load(file_path, link=False) as (data_from, data_to):
+            # Traemos todos los objetos del archivo .blend
+            data_to.objects = data_from.objects 
+            
+        # Recorremos los objetos traídos, los metemos en la escena y los seleccionamos
+        for obj in data_to.objects:
+            if obj is not None:
+                # Vincular a la colección actual
+                bpy.context.collection.objects.link(obj)
+                # Seleccionarlo
+                obj.select_set(True)
+                # Marcar el último como activo
+                bpy.context.view_layer.objects.active = obj
+    else:
+        raise ValueError(f"Formato no soportado: {ext}")
+
+    # Obtener el último objeto importado
+    obj = bpy.context.selected_objects[0]
+
+    # Posicion
+    obj.location = location
+
+    # Rotación en radianes
+    obj.rotation_euler = rotation_euler
+
+    # Escala
+    obj.scale = scale
+
+    print(f"Modelo importado y ajustado: {obj.name}")
+
+instance_object(file_path)
