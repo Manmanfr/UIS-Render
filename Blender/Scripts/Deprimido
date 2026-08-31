@@ -1,0 +1,75 @@
+import bpy
+import bmesh
+from mathutils import Vector
+
+# ==========================================
+# PARÁMETRO CONFIGURABLE
+# ==========================================
+# Margen del hueco (1.5 = 50% más ancho que el objeto para una caída suave)
+margen_radio = 1.5 
+# ==========================================
+
+plano = bpy.context.active_object
+
+if plano and plano.type == 'MESH':
+    # Autocorrección básica de subdivisiones
+    if len(plano.data.vertices) < 100:
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='SELECT')
+        bpy.ops.mesh.subdivide(number_cuts=50) 
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+    mat_plano_inv = plano.matrix_world.inverted()2
+    objetos = [obj for obj in bpy.data.objects if obj.type == 'MESH' and obj != plano]
+    
+    bm = bmesh.new()
+    bm.from_mesh(plano.data)
+    
+    hubo_cambios = False
+    
+    for obj in objetos:
+        # Calculamos la caja del objeto en relación al plano
+        esquinas_locales = [mat_plano_inv @ obj.matrix_world @ Vector(esq) for esq in obj.bound_box]
+        
+        # La profundidad exacta del objeto (no importa si es positiva o negativa)
+        z_min = min(esquina.z for esquina in esquinas_locales)
+        
+        # Calculamos el centro X-Y
+        x_centro = sum(esquina.x for esquina in esquinas_locales) / 8.0
+        y_centro = sum(esquina.y for esquina in esquinas_locales) / 8.0
+        centro_xy = Vector((x_centro, y_centro))
+        
+        # Calculamos el área que abarca el objeto
+        radio_obj = max((Vector((esquina.x, esquina.y)) - centro_xy).length for esquina in esquinas_locales)
+        radio_hueco = radio_obj * margen_radio
+        
+        for v in bm.verts:
+            v_xy = Vector((v.co.x, v.co.y))
+            distancia = (v_xy - centro_xy).length
+            
+            if distancia < radio_hueco:
+                factor = (distancia / radio_hueco) ** 2
+                
+                # NUEVA FÓRMULA MATEMÁTICA: 
+                # Transición suave desde la altura actual del terreno (v.co.z) 
+                # hasta la profundidad del objeto (z_min)
+                target_z = (z_min * (1.0 - factor)) + (v.co.z * factor)
+                
+                # Solo modificamos el vértice si necesita ir hacia ABAJO.
+                # Así evitamos crear "montañas" bajo objetos que estén flotando.
+                if target_z < v.co.z:
+                    v.co.z = target_z
+                    hubo_cambios = True
+                    
+    # Aplicar los cambios
+    bm.to_mesh(plano.data)
+    bm.free()
+    plano.data.update()
+    bpy.context.view_layer.update()
+    
+    if hubo_cambios:
+        print("Éxito: El terreno se ha hundido para acomodar los objetos.")
+    else:
+        print("Aviso: Ningún objeto estaba atravesando el terreno o el plano no tiene suficientes subdivisiones.")
+else:
+    print("Error: Selecciona primero el plano.")

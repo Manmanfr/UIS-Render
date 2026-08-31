@@ -1,0 +1,44 @@
+import bpy
+
+# El plano debe ser el objeto seleccionado/activo
+plano = bpy.context.active_object
+
+if plano and plano.type == 'MESH':
+    # Aseguramos estar en Modo Objeto para poder aplicar modificadores
+    if bpy.context.object.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+        
+    # Seleccionamos todos los demás objetos que sean mallas
+    objetos_corte = [obj for obj in bpy.data.objects if obj.type == 'MESH' and obj != plano]
+    
+    cortes_exitosos = 0
+    
+    for obj in objetos_corte:
+        # 1. Añadir un modificador Booleano al plano
+        mod = plano.modifiers.new(name=f"Corte_{obj.name}", type='BOOLEAN')
+        
+        # 2. Configurarlo en modo 'DIFFERENCE' (Diferencia = Recorte)
+        mod.operation = 'DIFFERENCE'
+        mod.object = obj
+        
+        # El solver 'EXACT' es más preciso, pero si tienes mallas muy complejas 
+        # y da error, puedes cambiarlo a 'FAST'
+        mod.solver = 'EXACT' 
+        
+        # 3. Aplicar el modificador permanentemente a la malla del plano
+        try:
+            bpy.context.view_layer.objects.active = plano
+            bpy.ops.object.modifier_apply(modifier=mod.name)
+            cortes_exitosos += 1
+        except Exception as e:
+            print(f"No se pudo recortar usando {obj.name}. Error: {e}")
+            plano.modifiers.remove(mod) # Limpiamos el modificador si falla
+
+    print(f"Proceso finalizado. Se aplicaron {cortes_exitosos} recortes en el plano.")
+    
+    # OPCIONAL: Ocultar los objetos originales para que puedas ver los huecos
+    #for obj in objetos_corte:
+    #    obj.hide_viewport = True
+        
+else:
+    print("Error: Selecciona primero el plano que vas a recortar.")
