@@ -1,0 +1,115 @@
+import bpy
+import bmesh
+from mathutils import Vector
+
+# --- CONFIGURACIÓN ---
+PATH_OBJECT_NAME = "Ways"          # Nombre del objeto que contiene las líneas de caminos
+TERRAIN_OBJECT_NAME = "Terrain"       # Nombre del objeto del terreno con relieve
+
+path_obj = bpy.data.objects.get(PATH_OBJECT_NAME)
+terrain_obj = bpy.data.objects.get(TERRAIN_OBJECT_NAME)
+
+if not path_obj or not terrain_obj:
+    print("Error: No se encontró el objeto de caminos o el terreno en la escena.")
+else:
+    context = bpy.context
+
+    if bpy.context.object and bpy.context.object.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+    # 1. Obtener la malla original y su matriz mundial
+    matrix_path = path_obj.matrix_world
+    bm_orig = bmesh.new()
+    bm_orig.from_mesh(path_obj.data)
+    bm_orig.verts.ensure_lookup_table()
+    bm_orig.edges.ensure_lookup_table()
+
+    # Obtener los límites espaciales (Bounding Box en coordenadas mundiales) del terreno
+    terrain_matrix = terrain_obj.matrix_world
+    terrain_bbox = [terrain_matrix @ Vector(corner) for corner in terrain_obj.bound_box]
+    
+    min_x = min(v.x for v in terrain_bbox)
+    max_x = max(v.x for v in terrain_bbox)
+    min_y = min(v.y for v in terrain_bbox)
+    max_y = max(v.y for v in terrain_bbox)
+
+    def is_inside_terrain(co_world):
+        """Verifica si un punto se encuentra dentro de los límites horizontales XY del terreno."""
+        return (min_x <= co_world.x <= max_x) and (min_y <= co_world.y <= max_y)
+
+    def get_intersection_point(p_in, p_out):
+        """Calcula por interpolación lineal (lerp) el punto exacto donde la línea cruza el borde del terreno."""
+        low = 0.0
+        high = 1.0
+        for _ in range(10):  # 10 iteraciones para alta precisión
+            mid = (low + high) / 2.0
+            test_pt = p_in.lerp(p_out, mid)
+            if is_inside_terrain(test_pt):
+                low = mid
+            else:
+                high = mid
+        return p_in.lerp(p_out, low)
+
+    # 2. Crear una nueva malla exclusivamente para las líneas recortadas (sin grosor todavía)
+    trimmed_mesh = bpy.data.meshes.new("Caminos_Recortados_Mesh")
+    trimmed_obj = bpy.data.objects.new("Caminos_Recortados", trimmed_mesh)
+    
+    if path_obj.users_collection:
+        path_obj.users_collection[0].objects.link(trimmed_obj)
+    else:
+        context.scene.collection.objects.link(trimmed_obj)
+
+    bm_trimmed = bmesh.new()
+
+    for edge in bm_orig.edges:
+        v1 = edge.verts[0]
+        v2 = edge.verts[1]
+        
+        co1 = matrix_path @ v1.co
+        co2 = matrix_path @ v2.co
+        
+        in1 = is_inside_terrain(co1)
+        in2 = is_inside_terrain(co2)
+        
+        if in1 and in2:
+            # Ambos vértices están dentro: se conservan intactos tal cual
+            v_a = bm_trimmed.verts.new(path_obj.matrix_world.inverted() @ co1)
+            v_b = bm_trimmed.verts.new(path_obj.matrix_world.inverted() @ co2)
+            bm_trimmed.verts.ensure_lookup_table()
+            try:
+                bm_trimmed.edges.new((v_a, v_b))
+            except ValueError:
+                pass
+                
+        elif in1 and not in2:
+            # v1 dentro, v2 fuera: se recorta el extremo exterior interpolando en el borde exacto
+            boundary_co = get_intersection_point(co1, co2)
+            v_a = bm_trimmed.verts.new(path_obj.matrix_world.inverted() @ co1)
+            v_b = bm_trimmed.verts.new(path_obj.matrix_world.inverted() @ boundary_co)
+            bm_trimmed.verts.ensure_lookup_table()
+            try:
+                bm_trimmed.edges.new((v_a, v_b))
+            except ValueError:
+                pass
+                
+        elif not in1 and in2:
+            # v1 fuera, v2 dentro: se recorta el extremo exterior interpolando en el borde exacto
+            boundary_co = get_intersection_point(co2, co1)
+            v_a = bm_trimmed.verts.new(path_obj.matrix_world.inverted() @ boundary_co)
+            v_b = bm_trimmed.verts.new(path_obj.matrix_world.inverted() @ co2)
+            bm_trimmed.verts.ensure_lookup_table()
+            try:
+                bm_trimmed.edges.new((v_a, v_b))
+            except ValueError:
+                pass
+        else:
+            # Ambos fuera: se eliminan por completo (no se crea arista)
+            pass
+
+    bm_orig.free()
+    
+    bm_trimmed.to_mesh(trimmed_mesh)
+    trimmed_mesh.update()
+    bm_trimmed.free()
+
+    print("¡Proceso completado! Se ha generado el objeto 'Caminos_Recortados' conservando solo los vértices y aristas dentro del terreno e interpolando las conexiones de los bordes.")
