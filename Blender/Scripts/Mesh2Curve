@@ -1,0 +1,79 @@
+import bpy
+
+# --- CONFIGURACIÓN ---
+PATH_OBJECT_NAME = "Ways"  # Nombre del objeto de líneas recortadas
+TERRAIN_OBJECT_NAME = "Terrain"         # Nombre del terreno con relieve
+ROAD_WIDTH = 3.0                        # Ancho del camino en metros
+OFFSET_Z = 0.1                          # Altura ligera para evitar parpadeo contra el terreno
+
+path_obj = bpy.data.objects.get(PATH_OBJECT_NAME)
+terrain_obj = bpy.data.objects.get(TERRAIN_OBJECT_NAME)
+
+if not path_obj or not terrain_obj:
+    print(f"Error: No se encontró el objeto '{PATH_PATH_NAME if 'PATH_PATH_NAME' in locals() else PATH_OBJECT_NAME}' o el terreno '{TERRAIN_OBJECT_NAME}' en la escena.")
+else:
+    context = bpy.context
+
+    if bpy.context.object and bpy.context.object.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+    # 1. Asegurar que el objeto sea una curva
+    if path_obj.type != 'CURVE':
+        context.view_layer.objects.active = path_obj
+        bpy.ops.object.select_all(action='DESELECT')
+        path_obj.select_set(True)
+        bpy.ops.object.convert(target='CURVE')
+
+    path_obj.name = "Caminos_Curva"
+
+    # 2. Añadir modificador de Shrinkwrap para ajustarlo al relieve del terreno
+    existing_shrink = path_obj.modifiers.get("SnapToTerrain")
+    if not existing_shrink:
+        mod_shrink = path_obj.modifiers.new(name="SnapToTerrain", type='SHRINKWRAP')
+        mod_shrink.target = terrain_obj
+        mod_shrink.wrap_method = 'TARGET_PROJECT'
+        mod_shrink.wrap_mode = 'ABOVE_SURFACE'
+        mod_shrink.offset = OFFSET_Z
+
+    # 3. Añadir modificador de Geometry Nodes
+    mod_gn_name = "Road_Geometry_Nodes"
+    mod_gn = path_obj.modifiers.get(mod_gn_name)
+    if not mod_gn:
+        mod_gn = path_obj.modifiers.new(name=mod_gn_name, type='NODES')
+
+    group_name = "Road_GeoNodes_Profile"
+    group = bpy.data.node_groups.get(group_name)
+    if not group:
+        group = bpy.data.node_groups.new(name=group_name, type='GeometryNodeTree')
+        group.interface.new_socket(name="Geometry", in_out='INPUT', socket_type='NodeSocketGeometry')
+        group.interface.new_socket(name="Geometry", in_out='OUTPUT', socket_type='NodeSocketGeometry')
+
+    mod_gn.node_group = group
+
+    # Construir el árbol de nodos de manera compatible con la interfaz moderna de Blender
+    if not group.nodes:
+        nodes = group.nodes
+        links = group.links
+
+        group_input = nodes.new('NodeGroupInput')
+        group_input.location = (-600, 0)
+
+        group_output = nodes.new('NodeGroupOutput')
+        group_output.location = (600, 0)
+
+        # Nodo para crear una curva perfil (círculo con resolución 4 para perfil plano de camino)
+        profile_circle = nodes.new('GeometryNodeCurvePrimitiveCircle')
+        profile_circle.location = (-300, -200)
+        profile_circle.inputs['Radius'].default_value = ROAD_WIDTH / 2.0
+        profile_circle.inputs['Resolution'].default_value = 4
+
+        # Nodo Curve to Mesh
+        curve_to_mesh = nodes.new('GeometryNodeCurveToMesh')
+        curve_to_mesh.location = (200, 0)
+
+        # Enlazar usando los sockets geométricos correctos
+        links.new(group_input.outputs[0], curve_to_mesh.inputs['Curve'])
+        links.new(profile_circle.outputs['Curve'], curve_to_mesh.inputs['Profile Curve'])
+        links.new(curve_to_mesh.outputs['Mesh'], group_output.inputs[0])
+
+    print("¡Proceso completado! Se han aplicado Geometry Nodes y Shrinkwrap correctamente a la curva de caminos.")
