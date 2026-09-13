@@ -1,0 +1,297 @@
+import bpy
+import csv
+import os
+import math
+import random
+from mathutils import Vector
+
+# --- CONFIGURACIÓN ---
+tree_csv_filepath = r"C:\Users\57321\Downloads\tree_positions.csv"
+
+REF_LAT = 7.140857685046179
+REF_LON = -73.12046867300049
+
+SCALE_FACTOR_LON = 110461.93
+SCALE_FACTOR_LAT = 110591.46
+
+TERRAIN_OBJECT_NAME = "Terrain"
+BUILDING_KEYWORDS = ["building", "edificio", "construct", "house"] 
+
+TREE_SAFETY_RADIUS = 4.0  
+collection_name = "Trees_Normalized"
+
+def get_or_create_collection(name):
+    if name not in bpy.data.collections:
+        new_coll = bpy.data.collections.new(name)
+        bpy.context.scene.collection.children.link(new_coll)
+        return new_coll
+    else:
+        return bpy.data.collections[name]
+
+def create_tree_materials():
+    mat_trunk = bpy.data.materials.get("Tree_Trunk_Mat")
+    if not mat_trunk:
+        mat_trunk = bpy.data.materials.new(name="Tree_Trunk_Mat")
+        mat_trunk.use_nodes = True
+        bsdf = mat_trunk.node_tree.nodes.get("Principled BSDF")
+        if bsdf:
+            bsdf.inputs['Base Color'].default_value = (0.10, 0.06, 0.03, 1.0)
+            bsdf.inputs['Roughness'].default_value = 0.9
+
+    mat_foliage = bpy.data.materials.get("Tree_Foliage_Mat")
+    if not mat_foliage:
+        mat_foliage = bpy.data.materials.new(name="Tree_Foliage_Mat")
+        mat_foliage.use_nodes = True
+        bsdf = mat_foliage.node_tree.nodes.get("Principled BSDF")
+        if bsdf:
+            bsdf.inputs['Base Color'].default_value = (0.05, 0.25, 0.08, 1.0)
+            bsdf.inputs['Roughness'].default_value = 0.6
+            
+    return mat_trunk, mat_foliage
+
+def create_procedural_tree_variants(num_variants=40, collection=None):
+    master_objects = []
+    mat_trunk, mat_foliage = create_tree_materials()
+    
+    for i in range(num_variants):
+        rand = random.Random(i * 12345)
+        
+        mesh_data = bpy.data.meshes.new(f"Tree_Massive_Mesh_{i:03d}")
+        master_obj = bpy.data.objects.new(f"Tree_Massive_{i:03d}", mesh_data)
+        
+        master_obj.hide_viewport = True
+        master_obj.hide_render = True
+        if collection:
+            collection.objects.link(master_obj)
+        
+        mod = master_obj.modifiers.new(name=f"TreeGen_{i}", type='NODES')
+        group = bpy.data.node_groups.new(name=f"Tree_GeoNodes_{i:03d}", type='GeometryNodeTree')
+        group.interface.new_socket(name="Geometry", in_out='OUTPUT', socket_type='NodeSocketGeometry')
+        
+        nodes = group.nodes
+        links = group.links
+        
+        group_output = nodes.new('NodeGroupOutput')
+        group_output.location = (1100, 0)
+        
+        join_geo = nodes.new('GeometryNodeJoinGeometry')
+        join_geo.location = (800, 0)
+        
+        # --- 1. TRONCO PRINCIPAL ---
+        trunk_height = rand.uniform(7.0, 10.0)
+        trunk_radius = rand.uniform(0.35, 0.55)
+        
+        trunk_node = nodes.new('GeometryNodeMeshCylinder')
+        trunk_node.location = (-600, -300)
+        trunk_node.inputs['Radius'].default_value = trunk_radius
+        trunk_node.inputs['Depth'].default_value = trunk_height
+        trunk_node.inputs['Vertices'].default_value = 16
+        
+        trunk_transform = nodes.new('GeometryNodeTransform')
+        trunk_transform.location = (-400, -300)
+        trunk_transform.inputs['Translation'].default_value = (0.0, 0.0, trunk_height / 2.0)
+        
+        set_mat_trunk = nodes.new('GeometryNodeSetMaterial')
+        set_mat_trunk.location = (-200, -300)
+        set_mat_trunk.inputs['Material'].default_value = mat_trunk
+        
+        links.new(trunk_node.outputs['Mesh'], trunk_transform.inputs['Geometry'])
+        links.new(trunk_transform.outputs['Geometry'], set_mat_trunk.inputs['Geometry'])
+        links.new(set_mat_trunk.outputs['Geometry'], join_geo.inputs['Geometry'])
+        
+        # --- 2. RAMAS SECUNDARIAS (Forzadas a nacer estrictamente por encima de la altura mínima) ---
+        num_branches = rand.randint(5, 8)
+        branch_geos = []
+        min_branch_height_ratio = 0.55 # Las ramas solo nacen del 55% hacia arriba del tronco
+        
+        for b in range(num_branches):
+            branch_node = nodes.new('GeometryNodeMeshCylinder')
+            b_length = rand.uniform(2.0, 4.0)
+            b_radius = rand.uniform(0.15, 0.28)
+            
+            branch_node.inputs['Radius'].default_value = b_radius
+            branch_node.inputs['Depth'].default_value = b_length
+            branch_node.inputs['Vertices'].default_value = 8
+            branch_node.location = (-600, b * 70 - 150)
+            
+            trans_branch = nodes.new('GeometryNodeTransform')
+            trans_branch.location = (-400, b * 70 - 150)
+            
+            # Altura estrictamente por encima del mínimo del tronco superior
+            z_pos = trunk_height * rand.uniform(min_branch_height_ratio, 0.85)
+            angle = (b / num_branches) * (2 * math.pi) + rand.uniform(-0.3, 0.3)
+            
+            origin_offset_x = math.cos(angle) * (trunk_radius * 0.7)
+            origin_offset_y = math.sin(angle) * (trunk_radius * 0.7)
+            trans_branch.inputs['Translation'].default_value = (origin_offset_x, origin_offset_y, z_pos)
+            
+            rot_x = rand.uniform(0.4, 0.8)
+            rot_y = rand.uniform(-0.3, 0.3)
+            rot_z = angle
+            trans_branch.inputs['Rotation'].default_value = (rot_x, rot_y, rot_z)
+            
+            set_mat_branch = nodes.new('GeometryNodeSetMaterial')
+            set_mat_branch.location = (-200, b * 70 - 150)
+            set_mat_branch.inputs['Material'].default_value = mat_trunk
+            
+            links.new(branch_node.outputs['Mesh'], trans_branch.inputs['Geometry'])
+            links.new(trans_branch.outputs['Geometry'], set_mat_branch.inputs['Geometry'])
+            branch_geos.append(set_mat_branch.outputs['Geometry'])
+            
+        join_branches = nodes.new('GeometryNodeJoinGeometry')
+        join_branches.location = (0, -150)
+        for b_geo in branch_geos:
+            links.new(b_geo, join_branches.inputs['Geometry'])
+        links.new(join_branches.outputs['Geometry'], join_geo.inputs['Geometry'])
+        
+        # --- 3. CÚMULOS DE FOLLAJE (Forzados estrictamente por encima de la altura mínima) ---
+        num_clusters = rand.randint(8, 13)
+        foliage_geos = []
+        min_foliage_height_ratio = 0.60 # Ningún cúmulo de hojas aparecerá por debajo del 60% de altura del tronco
+        
+        for c in range(num_clusters):
+            cluster_node = nodes.new('GeometryNodeMeshIcoSphere')
+            cluster_radius = rand.uniform(1.8, 3.8)
+            cluster_node.inputs['Radius'].default_value = cluster_radius
+            cluster_node.inputs['Subdivisions'].default_value = 2
+            cluster_node.location = (-600, c * 50 + 200)
+            
+            trans_cluster = nodes.new('GeometryNodeTransform')
+            trans_cluster.location = (-400, c * 50 + 200)
+            
+            angle = rand.uniform(0, 2 * math.pi)
+            dist_from_center = rand.uniform(0.1, 2.5) * (c / max(1, num_clusters - 1))
+            offset_x = math.cos(angle) * dist_from_center
+            offset_y = math.sin(angle) * dist_from_center
+            
+            # Altura mínima garantizada para el follaje
+            z_pos = (trunk_height * min_foliage_height_ratio) + (rand.uniform(0.0, trunk_height * (1.0 - min_foliage_height_ratio)) * (c / max(1, num_clusters - 1)))
+            
+            trans_cluster.inputs['Translation'].default_value = (offset_x, offset_y, z_pos)
+            
+            scale_x = rand.uniform(0.8, 1.3)
+            scale_y = rand.uniform(0.8, 1.3)
+            scale_z = rand.uniform(0.7, 1.2)
+            trans_cluster.inputs['Scale'].default_value = (scale_x, scale_y, scale_z)
+            
+            links.new(cluster_node.outputs['Mesh'], trans_cluster.inputs['Geometry'])
+            foliage_geos.append(trans_cluster.outputs['Geometry'])
+            
+        join_foliage = nodes.new('GeometryNodeJoinGeometry')
+        join_foliage.location = (0, 200)
+        for f_geo in foliage_geos:
+            links.new(f_geo, join_foliage.inputs['Geometry'])
+            
+        set_mat_foliage = nodes.new('GeometryNodeSetMaterial')
+        set_mat_foliage.location = (200, 200)
+        set_mat_foliage.inputs['Material'].default_value = mat_foliage
+        
+        links.new(join_foliage.outputs['Geometry'], set_mat_foliage.inputs['Geometry'])
+        links.new(set_mat_foliage.outputs['Geometry'], join_geo.inputs['Geometry'])
+            
+        links.new(join_geo.outputs['Geometry'], group_output.inputs['Geometry'])
+        mod.node_group = group
+        master_objects.append(master_obj)
+        
+    return master_objects
+
+def is_obj_or_parent_building(obj):
+    if not obj:
+        return False
+    name_lower = obj.name.lower()
+    if any(keyword in name_lower for keyword in BUILDING_KEYWORDS):
+        return True
+    for coll in obj.users_collection:
+        coll_name_lower = coll.name.lower()
+        if any(keyword in coll_name_lower for keyword in BUILDING_KEYWORDS):
+            return True
+    return False
+
+# --- EJECUCIÓN PRINCIPAL ---
+context = bpy.context
+terrain_obj = bpy.data.objects.get(TERRAIN_OBJECT_NAME)
+
+if not terrain_obj:
+    print(f"Error: No se encontró el objeto de terreno '{TERRAIN_OBJECT_NAME}' en la escena.")
+elif not os.path.exists(tree_csv_filepath):
+    print(f"Error: No se encontró el archivo CSV de árboles en: {tree_csv_filepath}")
+else:
+    tree_coll = get_or_create_collection(collection_name)
+    bpy.context.window.cursor_set("WAIT")
+    
+    tree_coll.hide_viewport = True
+    depsgraph = context.evaluated_depsgraph_get()
+    
+    master_trees = create_procedural_tree_variants(40, tree_coll)
+    valid_trees_data = []
+    skipped_no_hit = 0
+    skipped_building = 0
+    
+    check_offsets = [
+        (0.0, 0.0),
+        (TREE_SAFETY_RADIUS, 0.0),
+        (-TREE_SAFETY_RADIUS, 0.0),
+        (0.0, TREE_SAFETY_RADIUS),
+        (0.0, -TREE_SAFETY_RADIUS)
+    ]
+    
+    with open(tree_csv_filepath, mode='r', encoding='latin-1') as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            lon = float(row['lon'])
+            lat = float(row['lat'])
+            
+            base_x = (lon - REF_LON) * SCALE_FACTOR_LON
+            base_y = (lat - REF_LAT) * SCALE_FACTOR_LAT
+            
+            zone_valid = True
+            center_z = 0.0
+            
+            for dx, dy in check_offsets:
+                sample_x = base_x + dx
+                sample_y = base_y + dy
+                
+                ray_start = Vector((sample_x, sample_y, 10000.0))
+                ray_direction = Vector((0.0, 0.0, -1.0))
+                hit, hit_location, _, _, hit_object, _ = context.scene.ray_cast(depsgraph, ray_start, ray_direction)
+                
+                if not hit or hit_object is None or is_obj_or_parent_building(hit_object) or hit_object != terrain_obj:
+                    zone_valid = False
+                    break
+                
+                if dx == 0.0 and dy == 0.0:
+                    center_z = hit_location.z
+            
+            if not zone_valid:
+                ray_start_c = Vector((base_x, base_y, 10000.0))
+                hit_c, _, _, _, hit_obj_c, _ = context.scene.ray_cast(depsgraph, ray_start_c, Vector((0.0, 0.0, -1.0)))
+                if not hit_c or hit_obj_c != terrain_obj:
+                    skipped_no_hit += 1
+                else:
+                    skipped_building += 1
+                continue
+                
+            chosen_master = random.choice(master_trees)
+            valid_trees_data.append((base_x, base_y, center_z, chosen_master))
+
+    added_count = 0
+    for x, y, z, master in valid_trees_data:
+        tree_instance = master.copy()
+        tree_instance.location = (x, y, z)
+        
+        rand_scale = random.uniform(0.85, 1.25)
+        tree_instance.scale = (rand_scale, rand_scale, rand_scale)
+        
+        tree_instance.hide_viewport = False
+        tree_instance.hide_render = False
+        
+        tree_coll.objects.link(tree_instance)
+        added_count += 1
+        
+    tree_coll.hide_viewport = False
+    bpy.context.window.cursor_set("DEFAULT")
+    
+    print(f"--- PROCESO DE ÁRBOLES COMPLETADO ---")
+    print(f"- Árboles generados: {added_count}")
+    print(f"- Omitidos por fuera del terreno: {skipped_no_hit}")
+    print(f"- Omitidos por edificios: {skipped_building}")
