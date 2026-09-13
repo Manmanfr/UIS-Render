@@ -1,0 +1,265 @@
+import bpy
+import csv
+import os
+import math
+import random
+from mathutils import Vector
+
+# --- CONFIGURACIÓN ---
+csv_filepath = r"C:\Users\57321\Documents\Proyectos\rendering\bush_positions_dispersos.csv"
+
+REF_LAT = 7.140857685046179
+REF_LON = -73.12046867300049
+
+SCALE_FACTOR_LON = 110461.93
+SCALE_FACTOR_LAT = 110591.46
+
+TERRAIN_OBJECT_NAME = "Terrain"
+BUILDING_KEYWORDS = ["building"] 
+
+# Radio de seguridad ampliado para abarcar la mayor extensión y volumen de los arbustos
+BUSH_SAFETY_RADIUS = 1.6  
+
+collection_name = "Bushes_Normalized"
+if collection_name not in bpy.data.collections:
+    new_collection = bpy.data.collections.new(collection_name)
+    bpy.context.scene.collection.children.link(new_collection)
+else:
+    new_collection = bpy.data.collections[collection_name]
+
+def create_bush_materials():
+    """Crea un material verde denso y natural específico para arbustos voluminosos."""
+    mat_bush = bpy.data.materials.get("Bush_Elongated_Mat")
+    if not mat_bush:
+        mat_bush = bpy.data.materials.new(name="Bush_Elongated_Mat")
+        mat_bush.use_nodes = True
+        bsdf = mat_bush.node_tree.nodes.get("Principled BSDF")
+        if bsdf:
+            bsdf.inputs['Base Color'].default_value = (0.06, 0.20, 0.04, 1.0) # Verde hoja vivo
+            bsdf.inputs['Roughness'].default_value = 0.5
+    return mat_bush
+
+def create_procedural_bush_variants(num_variants=25):
+    """Crea variantes de arbustos mucho más densos, anchos y con gran volumen de hojas."""
+    master_objects = []
+    mat_bush = create_bush_materials()
+    
+    for i in range(num_variants):
+        rand = random.Random(i * 54321)
+        
+        mesh_data = bpy.data.meshes.new(f"Bush_Wide_Mesh_{i:03d}")
+        master_obj = bpy.data.objects.new(f"Bush_Wide_Master_{i:03d}", mesh_data)
+        
+        master_obj.hide_viewport = True
+        master_obj.hide_render = True
+        new_collection.objects.link(master_obj)
+        
+        mod = master_obj.modifiers.new(name=f"BushGen_{i}", type='NODES')
+        group = bpy.data.node_groups.new(name=f"Bush_Wide_GeoNodes_{i:03d}", type='GeometryNodeTree')
+        group.interface.new_socket(name="Geometry", in_out='OUTPUT', socket_type='NodeSocketGeometry')
+        
+        nodes = group.nodes
+        links = group.links
+        
+        group_output = nodes.new('NodeGroupOutput')
+        group_output.location = (1100, 0)
+        
+        join_main = nodes.new('GeometryNodeJoinGeometry')
+        join_main.location = (900, 0)
+        
+        # Gran cantidad de hojas para asegurar máxima densidad y cobertura de zona
+        num_leaves = rand.randint(55, 90)
+        foliage_geos = []
+        
+        for c in range(num_leaves):
+            is_bent = rand.random() < 0.50 # 50% de probabilidad de hoja doblada
+            
+            if is_bent:
+                # Segmento Inferior
+                cone_bottom = nodes.new('GeometryNodeMeshCone')
+                h_bot = rand.uniform(0.9, 1.6)
+                cone_bottom.inputs['Radius Top'].default_value = rand.uniform(0.1, 0.22)
+                cone_bottom.inputs['Radius Bottom'].default_value = rand.uniform(0.3, 0.5)
+                cone_bottom.inputs['Depth'].default_value = h_bot
+                cone_bottom.inputs['Vertices'].default_value = 5
+                cone_bottom.location = (-600, c * 40 - 500)
+                
+                trans_bot = nodes.new('GeometryNodeTransform')
+                trans_bot.location = (-400, c * 40 - 500)
+                
+                # Segmento Superior (doblez pronunciado)
+                cone_top = nodes.new('GeometryNodeMeshCone')
+                h_top = rand.uniform(0.7, 1.4)
+                cone_top.inputs['Radius Top'].default_value = 0.02
+                cone_top.inputs['Radius Bottom'].default_value = cone_bottom.inputs['Radius Top'].default_value
+                cone_top.inputs['Depth'].default_value = h_top
+                cone_top.inputs['Vertices'].default_value = 5
+                cone_top.location = (-600, c * 40 - 450)
+                
+                trans_top = nodes.new('GeometryNodeTransform')
+                trans_top.location = (-400, c * 40 - 450)
+                trans_top.inputs['Translation'].default_value = (0.0, 0.0, h_bot)
+                trans_top.inputs['Rotation'].default_value = (rand.uniform(0.7, 1.5), rand.uniform(-0.5, 0.5), rand.uniform(0, 2 * math.pi))
+                
+                join_single_leaf = nodes.new('GeometryNodeJoinGeometry')
+                join_single_leaf.location = (-200, c * 40 - 500)
+                
+                links.new(cone_bottom.outputs['Mesh'], trans_bot.inputs['Geometry'])
+                links.new(cone_top.outputs['Mesh'], trans_top.inputs['Geometry'])
+                
+                links.new(trans_bot.outputs['Geometry'], join_single_leaf.inputs['Geometry'])
+                links.new(trans_top.outputs['Geometry'], join_single_leaf.inputs['Geometry'])
+                
+                leaf_output_geo = join_single_leaf.outputs['Geometry']
+                
+            else:
+                # Hoja recta ancha
+                leaf_node = nodes.new('GeometryNodeMeshCone')
+                leaf_node.inputs['Radius Top'].default_value = 0.03
+                leaf_node.inputs['Radius Bottom'].default_value = rand.uniform(0.25, 0.45)
+                leaf_node.inputs['Depth'].default_value = rand.uniform(1.4, 2.8)
+                leaf_node.inputs['Vertices'].default_value = 5
+                leaf_node.location = (-600, c * 40 - 500)
+                
+                leaf_output_geo = leaf_node.outputs['Mesh']
+            
+            # --- Distribución espacial mucho más amplia para abarcar mayor zona ---
+            trans_cluster = nodes.new('GeometryNodeTransform')
+            trans_cluster.location = (-50, c * 40 - 500)
+            
+            angle = rand.uniform(0, 2 * math.pi)
+            # Rango de dispersión ampliado para que abarque más área por arbusto
+            dist_from_center = rand.uniform(0.0, 2.2) 
+            offset_x = math.cos(angle) * dist_from_center
+            offset_y = math.sin(angle) * dist_from_center
+            offset_z = rand.uniform(0.0, 0.5)
+            
+            trans_cluster.inputs['Translation'].default_value = (offset_x, offset_y, offset_z)
+            
+            # Rotación abierta en abanico volumétrico
+            rot_x = rand.uniform(-0.7, 0.7)
+            rot_y = rand.uniform(-0.7, 0.7)
+            rot_z = rand.uniform(0, 2 * math.pi)
+            trans_cluster.inputs['Rotation'].default_value = (rot_x, rot_y, rot_z)
+            
+            links.new(leaf_output_geo, trans_cluster.inputs['Geometry'])
+            foliage_geos.append(trans_cluster.outputs['Geometry'])
+            
+        join_cluster = nodes.new('GeometryNodeJoinGeometry')
+        join_cluster.location = (300, 0)
+        for f_geo in foliage_geos:
+            links.new(f_geo, join_cluster.inputs['Geometry'])
+            
+        set_mat = nodes.new('GeometryNodeSetMaterial')
+        set_mat.location = (600, 0)
+        set_mat.inputs['Material'].default_value = mat_bush
+        
+        links.new(join_cluster.outputs['Geometry'], set_mat.inputs['Geometry'])
+        links.new(set_mat.outputs['Geometry'], join_main.inputs['Geometry'])
+        
+        links.new(join_main.outputs['Geometry'], group_output.inputs['Geometry'])
+        mod.node_group = group
+        master_objects.append(master_obj)
+        
+    return master_objects
+
+def is_obj_or_parent_building(obj):
+    """Verifica si el objeto golpeado o alguna colección contenedora pertenece a un edificio."""
+    if not obj:
+        return False
+    name_lower = obj.name.lower()
+    if any(keyword in name_lower for keyword in BUILDING_KEYWORDS):
+        return True
+    for coll in obj.users_collection:
+        coll_name_lower = coll.name.lower()
+        if any(keyword in coll_name_lower for keyword in BUILDING_KEYWORDS):
+            return True
+    return False
+
+# --- EJECUCIÓN PRINCIPAL ---
+context = bpy.context
+
+terrain_obj = bpy.data.objects.get(TERRAIN_OBJECT_NAME)
+if not terrain_obj:
+    print(f"Error: No se encontró el objeto de terreno '{TERRAIN_OBJECT_NAME}' en la escena.")
+elif not os.path.exists(csv_filepath):
+    print(f"Error: No se encontró el archivo CSV en la ruta especificada: {csv_filepath}")
+else:
+    master_bushes = create_procedural_bush_variants(25)
+    
+    bpy.context.window.cursor_set("WAIT")
+    depsgraph = context.evaluated_depsgraph_get()
+    
+    valid_bushes_data = []
+    skipped_no_hit = 0
+    skipped_building = 0
+    
+    check_offsets = [
+        (0.0, 0.0),                        # Centro
+        (BUSH_SAFETY_RADIUS, 0.0),         # Este
+        (-BUSH_SAFETY_RADIUS, 0.0),        # Oeste
+        (0.0, BUSH_SAFETY_RADIUS),         # Norte
+        (0.0, -BUSH_SAFETY_RADIUS)         # Sur
+    ]
+    
+    with open(csv_filepath, mode='r', encoding='latin-1') as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            lon = float(row['lon'])
+            lat = float(row['lat'])
+            
+            base_x = (lon - REF_LON) * SCALE_FACTOR_LON
+            base_y = (lat - REF_LAT) * SCALE_FACTOR_LAT
+            
+            zone_valid = True
+            center_z = 0.0
+            
+            for dx, dy in check_offsets:
+                sample_x = base_x + dx
+                sample_y = base_y + dy
+                
+                ray_start = Vector((sample_x, sample_y, 10000.0))
+                ray_direction = Vector((0.0, 0.0, -1.0))
+                hit, hit_location, _, _, hit_object, _ = context.scene.ray_cast(depsgraph, ray_start, ray_direction)
+                
+                if not hit or hit_object is None or is_obj_or_parent_building(hit_object) or hit_object != terrain_obj:
+                    zone_valid = False
+                    break
+                
+                if dx == 0.0 and dy == 0.0:
+                    center_z = hit_location.z
+            
+            if not zone_valid:
+                ray_start_c = Vector((base_x, base_y, 10000.0))
+                hit_c, _, _, _, hit_obj_c, _ = context.scene.ray_cast(depsgraph, ray_start_c, Vector((0.0, 0.0, -1.0)))
+                if not hit_c or hit_obj_c != terrain_obj:
+                    skipped_no_hit += 1
+                else:
+                    skipped_building += 1
+                continue
+                
+            chosen_master = random.choice(master_bushes)
+            valid_bushes_data.append((base_x, base_y, center_z, chosen_master))
+
+    added_count = 0
+    for x, y, z, master in valid_bushes_data:
+        bush_instance = master.copy()
+        bush_instance.location = (x, y, z)
+        
+        # Escala variada un poco más amplia para maximizar cobertura
+        rand_scale = random.uniform(0.9, 1.6)
+        bush_instance.scale = (rand_scale, rand_scale, rand_scale)
+        bush_instance.rotation_euler[2] = random.uniform(0, 2 * math.pi)
+        
+        bush_instance.hide_viewport = False
+        bush_instance.hide_render = False
+        
+        new_collection.objects.link(bush_instance)
+        added_count += 1
+
+    bpy.context.window.cursor_set("DEFAULT")
+    print(f"¡Proceso de arbustos anchos, densos y con hojas dobladas completado!")
+    print(f"- Arbustos generados: {added_count}")
+    print(f"- Variantes maestras creadas: {len(master_bushes)}")
+    print(f"- Omitidos por fuera del terreno: {skipped_no_hit}")
+    print(f"- Omitidos por proximidad a edificios: {skipped_building}")
